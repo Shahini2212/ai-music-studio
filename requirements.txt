@@ -1,0 +1,10 @@
+flask
+gunicorn
+moviepy>=2.0.0
+SpeechRecognition
+pydub
+groq
+numpy
+requests
+werkzeug
+twilio
