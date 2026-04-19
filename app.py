@@ -49,8 +49,10 @@ HF_TOKEN = os.environ.get('HF_TOKEN', '')
 
 def hf_generate_music(prompt, duration=20):
     """
-    Generate music using Shiny04's own MusicGen HF Space.
-    Returns raw WAV bytes or None.
+    Generate music using Shiny04's MusicGen HF Space.
+    Uses Gradio 6 two-step API:
+    Step 1: POST to /gradio_api/call/generate → get event_id
+    Step 2: GET /gradio_api/call/generate/{event_id} → get result
     """
     duration = max(5, min(int(duration), 30))
     MY_SPACE_URL = 'https://shiny04-musicgen-api.hf.space'
@@ -60,60 +62,94 @@ def hf_generate_music(prompt, duration=20):
         headers['Authorization'] = f'Bearer {HF_TOKEN}'
 
     print(f"[HF API] Generating: {prompt[:60]} | {duration}s ...")
-    print(f"[HF API] Calling Space: {MY_SPACE_URL}")
 
-    # Gradio 6 uses /run/generate endpoint (based on api_name="generate")
-    endpoints_to_try = [
-        f"{MY_SPACE_URL}/run/generate",
-        f"{MY_SPACE_URL}/run/predict",
-        f"{MY_SPACE_URL}/api/predict",
-    ]
+    try:
+        # Step 1: Submit the job
+        submit_url = f"{MY_SPACE_URL}/gradio_api/call/generate"
+        print(f"[HF API] Submitting to: {submit_url}")
 
-    for endpoint in endpoints_to_try:
-        try:
-            print(f"[HF API] Trying: {endpoint}")
-            payload = {"data": [prompt, duration]}
-            resp = http_requests.post(
-                endpoint,
-                headers=headers,
-                json=payload,
-                timeout=180
-            )
+        resp = http_requests.post(
+            submit_url,
+            headers=headers,
+            json={"data": [prompt, duration]},
+            timeout=30
+        )
 
-            if resp.status_code == 200:
-                result = resp.json()
-                data = result.get('data', [])
-                if data:
-                    audio_info = data[0]
-                    # Gradio returns audio as dict with 'url'
-                    if isinstance(audio_info, dict):
-                        audio_url = audio_info.get('url') or audio_info.get('name', '')
-                        if audio_url:
-                            if not audio_url.startswith('http'):
-                                audio_url = f"{MY_SPACE_URL}/file={audio_url}"
-                            audio_resp = http_requests.get(audio_url, timeout=60)
-                            if audio_resp.status_code == 200:
-                                print(f"[HF API] Success! Got {len(audio_resp.content)} bytes")
-                                return audio_resp.content
-                    # Gradio numpy format [sample_rate, data_array]
-                    elif isinstance(audio_info, (list, tuple)) and len(audio_info) == 2:
-                        import numpy as np, scipy.io.wavfile as wav_io
-                        sr, audio_data = audio_info
-                        audio_np = np.array(audio_data, dtype=np.int16)
-                        buf = io.BytesIO()
-                        wav_io.write(buf, int(sr), audio_np)
-                        buf.seek(0)
-                        wav_bytes = buf.read()
-                        print(f"[HF API] Success (numpy)! Got {len(wav_bytes)} bytes")
-                        return wav_bytes
+        if resp.status_code != 200:
+            print(f"[HF API] Submit failed {resp.status_code}: {resp.text[:200]}")
+            return None
 
-            print(f"[HF API] {endpoint} → {resp.status_code}: {resp.text[:150]}")
+        event_id = resp.json().get('event_id')
+        if not event_id:
+            print(f"[HF API] No event_id in response: {resp.text[:200]}")
+            return None
 
-        except Exception as e:
-            print(f"[HF API] {endpoint} exception: {e}")
+        print(f"[HF API] Job submitted! event_id: {event_id}")
 
-    print("[HF API] All endpoints failed.")
-    return None
+        # Step 2: Poll for result (MusicGen on CPU can take 2-3 mins)
+        result_url = f"{MY_SPACE_URL}/gradio_api/call/generate/{event_id}"
+        print(f"[HF API] Polling: {result_url}")
+
+        poll_resp = http_requests.get(
+            result_url,
+            headers=headers,
+            timeout=300,  # wait up to 5 minutes
+            stream=True
+        )
+
+        # Parse SSE (Server-Sent Events) response
+        result_data = None
+        for line in poll_resp.iter_lines():
+            if line:
+                line = line.decode('utf-8') if isinstance(line, bytes) else line
+                if line.startswith('data:'):
+                    import json
+                    try:
+                        result_data = json.loads(line[5:].strip())
+                        break
+                    except:
+                        continue
+
+        if not result_data:
+            print("[HF API] No result data received")
+            return None
+
+        print(f"[HF API] Got result: {str(result_data)[:100]}")
+
+        # Extract audio from result
+        if isinstance(result_data, list) and len(result_data) > 0:
+            audio_info = result_data[0]
+
+            # Dict with url key
+            if isinstance(audio_info, dict):
+                audio_url = audio_info.get('url') or audio_info.get('path', '')
+                if audio_url:
+                    if not audio_url.startswith('http'):
+                        audio_url = f"{MY_SPACE_URL}/{audio_url.lstrip('/')}"
+                    audio_resp = http_requests.get(audio_url, timeout=60)
+                    if audio_resp.status_code == 200:
+                        print(f"[HF API] Success! Got {len(audio_resp.content)} bytes")
+                        return audio_resp.content
+
+            # Numpy format [sample_rate, data_array]
+            elif isinstance(audio_info, (list, tuple)) and len(audio_info) == 2:
+                import numpy as np
+                import scipy.io.wavfile as wav_io
+                sr, audio_data = audio_info
+                audio_np = np.array(audio_data, dtype=np.int16)
+                buf = io.BytesIO()
+                wav_io.write(buf, int(sr), audio_np)
+                buf.seek(0)
+                wav_bytes = buf.read()
+                print(f"[HF API] Success (numpy)! Got {len(wav_bytes)} bytes")
+                return wav_bytes
+
+        print(f"[HF API] Could not extract audio from: {str(result_data)[:200]}")
+        return None
+
+    except Exception as e:
+        print(f"[HF API] Exception: {e}")
+        return None
 
 print("--- HF INFERENCE API READY (Shiny04/musicgen-api Space) ---")
 model = True
