@@ -2,7 +2,13 @@ import os, time, io, requests as http_requests
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from functools import wraps
 from werkzeug.utils import secure_filename
-from moviepy.editor import VideoFileClip
+try:
+    from moviepy.editor import VideoFileClip
+except ImportError:
+    try:
+        from moviepy import VideoFileClip
+    except ImportError:
+        VideoFileClip = None
 import speech_recognition as sr
 from groq import Groq as _GroqClient
 _groq = _GroqClient(api_key=os.environ.get("GROQ_API_KEY", ""))
