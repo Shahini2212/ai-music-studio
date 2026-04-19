@@ -1,9 +1,11 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # System dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsndfile1 \
+    gcc \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -12,7 +14,8 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install Python packages
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy all app files
 COPY . .
