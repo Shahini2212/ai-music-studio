@@ -1,4 +1,4 @@
-import os, time, requests as http_requests
+import os, time, io, requests as http_requests
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from functools import wraps
 from werkzeug.utils import secure_filename
@@ -44,12 +44,9 @@ HF_TOKEN = os.environ.get('HF_TOKEN', '')
 def hf_generate_music(prompt, duration=20):
     """
     Generate music using Shiny04's own MusicGen HF Space.
-    Falls back to gradio_client if simple API fails.
     Returns raw WAV bytes or None.
     """
     duration = max(5, min(int(duration), 30))
-
-    # YOUR OWN Space — always tried first
     MY_SPACE_URL = 'https://shiny04-musicgen-api.hf.space'
 
     headers = {'Content-Type': 'application/json'}
@@ -59,57 +56,61 @@ def hf_generate_music(prompt, duration=20):
     print(f"[HF API] Generating: {prompt[:60]} | {duration}s ...")
     print(f"[HF API] Calling Space: {MY_SPACE_URL}")
 
-    try:
-        # Use Gradio's /run/predict API
-        predict_url = f"{MY_SPACE_URL}/run/predict"
-        payload = {
-            "fn_index": 0,
-            "data": [prompt, duration]
-        }
-        resp = http_requests.post(
-            predict_url,
-            headers=headers,
-            json=payload,
-            timeout=180  # MusicGen on CPU can take up to 3 min
-        )
+    # Gradio 6 uses /run/generate endpoint (based on api_name="generate")
+    endpoints_to_try = [
+        f"{MY_SPACE_URL}/run/generate",
+        f"{MY_SPACE_URL}/run/predict",
+        f"{MY_SPACE_URL}/api/predict",
+    ]
 
-        if resp.status_code == 200:
-            result = resp.json()
-            data = result.get('data', [])
-            if data:
-                audio_info = data[0]
-                # Gradio returns audio as dict with 'url' or 'name'
-                if isinstance(audio_info, dict):
-                    audio_url = audio_info.get('url') or audio_info.get('name', '')
-                    if audio_url:
-                        if not audio_url.startswith('http'):
-                            audio_url = f"{MY_SPACE_URL}/file={audio_url}"
-                        audio_resp = http_requests.get(audio_url, timeout=60)
-                        if audio_resp.status_code == 200:
-                            print(f"[HF API] Success! Got {len(audio_resp.content)} bytes")
-                            return audio_resp.content
-                elif isinstance(audio_info, list) and len(audio_info) == 2:
-                    # Gradio numpy format [sample_rate, data]
-                    import numpy as np, io, scipy.io.wavfile as wav
-                    sr, audio_data = audio_info
-                    audio_np = np.array(audio_data, dtype=np.int16)
-                    buf = io.BytesIO()
-                    wav.write(buf, sr, audio_np)
-                    buf.seek(0)
-                    wav_bytes = buf.read()
-                    print(f"[HF API] Success (numpy)! Got {len(wav_bytes)} bytes")
-                    return wav_bytes
+    for endpoint in endpoints_to_try:
+        try:
+            print(f"[HF API] Trying: {endpoint}")
+            payload = {"data": [prompt, duration]}
+            resp = http_requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=180
+            )
 
-        print(f"[HF API] Space returned {resp.status_code}: {resp.text[:200]}")
+            if resp.status_code == 200:
+                result = resp.json()
+                data = result.get('data', [])
+                if data:
+                    audio_info = data[0]
+                    # Gradio returns audio as dict with 'url'
+                    if isinstance(audio_info, dict):
+                        audio_url = audio_info.get('url') or audio_info.get('name', '')
+                        if audio_url:
+                            if not audio_url.startswith('http'):
+                                audio_url = f"{MY_SPACE_URL}/file={audio_url}"
+                            audio_resp = http_requests.get(audio_url, timeout=60)
+                            if audio_resp.status_code == 200:
+                                print(f"[HF API] Success! Got {len(audio_resp.content)} bytes")
+                                return audio_resp.content
+                    # Gradio numpy format [sample_rate, data_array]
+                    elif isinstance(audio_info, (list, tuple)) and len(audio_info) == 2:
+                        import numpy as np, scipy.io.wavfile as wav_io
+                        sr, audio_data = audio_info
+                        audio_np = np.array(audio_data, dtype=np.int16)
+                        buf = io.BytesIO()
+                        wav_io.write(buf, int(sr), audio_np)
+                        buf.seek(0)
+                        wav_bytes = buf.read()
+                        print(f"[HF API] Success (numpy)! Got {len(wav_bytes)} bytes")
+                        return wav_bytes
 
-    except Exception as e:
-        print(f"[HF API] Space exception: {e}")
+            print(f"[HF API] {endpoint} → {resp.status_code}: {resp.text[:150]}")
+
+        except Exception as e:
+            print(f"[HF API] {endpoint} exception: {e}")
 
     print("[HF API] All endpoints failed.")
     return None
 
 print("--- HF INFERENCE API READY (Shiny04/musicgen-api Space) ---")
-model = True  # sentinel so model-check routes still work
+model = True
 
 # ── Auth helper ───────────────────────────────────────────────
 def login_required(f):
