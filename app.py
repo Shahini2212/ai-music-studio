@@ -85,29 +85,40 @@ def hf_generate_music(prompt, duration=20):
 
         print(f"[HF API] Job submitted! event_id: {event_id}")
 
-        # Step 2: Poll for result via SSE
+        # Step 2: Poll for result via SSE — MusicGen on CPU takes 1-3 mins
         result_url = f"{MY_SPACE_URL}/gradio_api/call/generate/{event_id}"
         print(f"[HF API] Polling: {result_url}")
 
-        poll_resp = http_requests.get(
-            result_url,
-            headers=headers,
-            timeout=300,
-            stream=True
-        )
-
         import json as _json
         result_data = None
-        for line in poll_resp.iter_lines():
-            if line:
+
+        try:
+            poll_resp = http_requests.get(
+                result_url,
+                headers=headers,
+                timeout=300,  # 5 min max
+                stream=True
+            )
+
+            for line in poll_resp.iter_lines(chunk_size=1, decode_unicode=True):
+                if not line:
+                    continue
                 line = line.decode('utf-8') if isinstance(line, bytes) else line
+                print(f"[HF API] SSE line: {line[:100]}")
                 if line.startswith('data:'):
-                    try:
-                        result_data = _json.loads(line[5:].strip())
-                        print(f"[HF API] Got result data: {str(result_data)[:150]}")
-                        break
-                    except:
+                    data_str = line[5:].strip()
+                    if not data_str or data_str == 'null':
                         continue
+                    try:
+                        result_data = _json.loads(data_str)
+                        print(f"[HF API] Got result: {str(result_data)[:150]}")
+                        break
+                    except Exception as je:
+                        print(f"[HF API] JSON parse error: {je} | data: {data_str[:100]}")
+                        continue
+
+        except Exception as poll_e:
+            print(f"[HF API] Polling error: {poll_e}")
 
         if not result_data:
             print("[HF API] No result data received")
