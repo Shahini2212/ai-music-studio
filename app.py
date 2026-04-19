@@ -36,47 +36,95 @@ os.makedirs('static/generated', exist_ok=True)
 # ── Init DB on startup ────────────────────────────────────────
 init_db()
 
-# ── HF Inference API for MusicGen ────────────────────────────
+# ── MusicGen via HF Gradio Space API ─────────────────────────
+# HF removed MusicGen from free serverless inference API.
+# We use public Gradio spaces instead — still free!
 HF_TOKEN = os.environ.get('HF_TOKEN', '')
 
-# Use the newer HF router endpoint — works from inside HF Spaces
-HF_API_URLS = [
-    'https://router.huggingface.co/hf-inference/models/facebook/musicgen-small',
-    'https://api-inference.huggingface.co/models/facebook/musicgen-small',
-]
-
 def hf_generate_music(prompt, duration=20):
-    """Call HF Inference API to generate music. Returns raw WAV bytes or None."""
-    if not HF_TOKEN:
-        print("[HF API] ERROR: HF_TOKEN env var not set!")
-        return None
-    headers = {
-        'Authorization': f'Bearer {HF_TOKEN}',
-        'Content-Type': 'application/json',
-    }
-    payload = {
-        'inputs': prompt,
-        'parameters': {'max_new_tokens': int(duration * 50)}
-    }
+    """
+    Generate music using HF Gradio Space API (free).
+    Falls back through multiple public spaces if one fails.
+    Returns raw WAV bytes or None.
+    """
+    import json
+
+    duration = min(int(duration), 30)  # Gradio spaces cap at 30s free tier
+
+    # Public MusicGen Gradio spaces — tried in order
+    SPACES = [
+        'https://facebook-musicgen.hf.space',
+        'https://artificialguybr-musicgen-free.hf.space',
+    ]
+
+    headers = {'Content-Type': 'application/json'}
+    if HF_TOKEN:
+        headers['Authorization'] = f'Bearer {HF_TOKEN}'
+
     print(f"[HF API] Generating: {prompt[:60]} | {duration}s ...")
 
-    for url in HF_API_URLS:
+    for space_url in SPACES:
         try:
-            print(f"[HF API] Trying: {url}")
-            resp = http_requests.post(url, headers=headers, json=payload, timeout=120)
+            # Step 1: Queue the prediction
+            predict_url = f"{space_url}/api/predict"
+            print(f"[HF API] Trying space: {space_url}")
+
+            payload = {
+                "data": [prompt, "melody", duration, None, 250, 0, 1.0, 3, False]
+            }
+            resp = http_requests.post(
+                predict_url,
+                headers=headers,
+                json=payload,
+                timeout=120
+            )
+
             if resp.status_code == 200:
-                print(f"[HF API] Success! Got {len(resp.content)} bytes from {url}")
-                return resp.content
-            elif resp.status_code == 503:
-                print("[HF API] Model loading, waiting 20s ...")
-                time.sleep(20)
-                resp = http_requests.post(url, headers=headers, json=payload, timeout=120)
-                if resp.status_code == 200:
-                    return resp.content
-            print(f"[HF API] {url} returned {resp.status_code}: {resp.text[:200]}")
+                result = resp.json()
+                data = result.get('data', [])
+                if data:
+                    # Get audio URL from response
+                    audio_info = data[0] if data else None
+                    if isinstance(audio_info, dict):
+                        audio_url = audio_info.get('url') or audio_info.get('name', '')
+                        if audio_url:
+                            if not audio_url.startswith('http'):
+                                audio_url = f"{space_url}/file={audio_url}"
+                            audio_resp = http_requests.get(audio_url, timeout=60)
+                            if audio_resp.status_code == 200:
+                                print(f"[HF API] Success! Got {len(audio_resp.content)} bytes")
+                                return audio_resp.content
+                    elif isinstance(audio_info, str) and audio_info.startswith('http'):
+                        audio_resp = http_requests.get(audio_info, timeout=60)
+                        if audio_resp.status_code == 200:
+                            print(f"[HF API] Success! Got {len(audio_resp.content)} bytes")
+                            return audio_resp.content
+
+            print(f"[HF API] Space {space_url} returned {resp.status_code}: {resp.text[:100]}")
+
         except Exception as e:
-            print(f"[HF API] {url} exception: {e}")
+            print(f"[HF API] Space {space_url} exception: {e}")
         continue
+
+    # Last resort: try old inference API just in case
+    OLD_URLS = [
+        'https://api-inference.huggingface.co/models/facebook/musicgen-small',
+    ]
+    for url in OLD_URLS:
+        try:
+            print(f"[HF API] Trying legacy: {url}")
+            resp = http_requests.post(
+                url,
+                headers={'Authorization': f'Bearer {HF_TOKEN}', 'Content-Type': 'application/json'},
+                json={'inputs': prompt, 'parameters': {'max_new_tokens': int(duration * 50)}},
+                timeout=120
+            )
+            if resp.status_code == 200:
+                print(f"[HF API] Legacy success! Got {len(resp.content)} bytes")
+                return resp.content
+            print(f"[HF API] Legacy {url} returned {resp.status_code}: {resp.text[:100]}")
+        except Exception as e:
+            print(f"[HF API] Legacy {url} exception: {e}")
 
     print("[HF API] All endpoints failed.")
     return None
