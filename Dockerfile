@@ -27,4 +27,4 @@ RUN mkdir -p static/generated templates instances uploads
 EXPOSE 10000
 
 # Start the app — longer timeout for music generation (up to 3 min)
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "180", "--workers", "1", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "400", "--workers", "1", "--keep-alive", "5", "app:app"]
