@@ -2,7 +2,7 @@ import os, time, requests as http_requests
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from functools import wraps
 from werkzeug.utils import secure_filename
-from moviepy import VideoFileClip
+from moviepy.editor import VideoFileClip
 import speech_recognition as sr
 from groq import Groq as _GroqClient
 _groq = _GroqClient(api_key=os.environ.get("GROQ_API_KEY", ""))
@@ -106,7 +106,7 @@ def video_bgm():
     if 'video' not in request.files:
         return jsonify({'success': False, 'message': 'No video file received'})
 
-    from moviepy import VideoFileClip
+    from moviepy.editor import VideoFileClip
 
     video_file = request.files['video']
     filename   = secure_filename(video_file.filename)
@@ -270,24 +270,31 @@ def gallery():
 
 def send_otp_email(email, otp):
     """
-    Send OTP via Mailjet HTTP API.
-    Free tier: 200 emails/day, no domain needed, sends to anyone worldwide.
-    Set MAILJET_API_KEY, MAILJET_SECRET_KEY, MAILJET_FROM_EMAIL in HF Space secrets.
-    MAILJET_FROM_EMAIL = the email you signed up to Mailjet with (Gmail is fine).
+    Send OTP via Gmail SMTP.
+    Works perfectly on Render (no outbound restrictions).
+    Set GMAIL_USER and GMAIL_APP_PASSWORD in Render environment variables.
+    GMAIL_APP_PASSWORD = 16-digit Google App Password (no spaces).
     """
-    api_key    = os.environ.get('MAILJET_API_KEY', '').strip()
-    secret_key = os.environ.get('MAILJET_SECRET_KEY', '').strip()
-    from_email = os.environ.get('MAILJET_FROM_EMAIL', '').strip()
-    from_name  = os.environ.get('MAILJET_FROM_NAME', 'AI Music Studio').strip()
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
 
-    print(f"[EMAIL DEBUG] MAILJET_API_KEY set: {'YES' if api_key else 'NO - missing!'}")
-    print(f"[EMAIL DEBUG] MAILJET_FROM_EMAIL: {from_email or 'NOT SET'}")
+    gmail_user = os.environ.get('GMAIL_USER', '').strip()
+    gmail_pass = os.environ.get('GMAIL_APP_PASSWORD', '').replace(' ', '').strip()
 
-    if not api_key or not secret_key or not from_email:
-        print(f"[OTP FALLBACK] Mailjet not configured — OTP for {email}: {otp}")
+    print(f"[EMAIL DEBUG] GMAIL_USER set: {'YES -> ' + gmail_user if gmail_user else 'NO - missing!'}")
+    print(f"[EMAIL DEBUG] GMAIL_APP_PASSWORD set: {'YES len=' + str(len(gmail_pass)) if gmail_pass else 'NO - missing!'}")
+
+    if not gmail_user or not gmail_pass:
+        print(f"[OTP FALLBACK] Gmail not configured — OTP for {email}: {otp}")
         return False
 
-    html_body = f"""
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = '🎵 Your AI Music Studio Verification Code'
+    msg['From']    = f'AI Music Studio <{gmail_user}>'
+    msg['To']      = email
+
+    html = f"""
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px;
                 background:#0f0f0f;border-radius:16px;color:#fff;">
       <h2 style="color:#7c3aed;margin-bottom:8px;">🎵 AI Music Studio</h2>
@@ -303,39 +310,29 @@ def send_otp_email(email, otp):
         If you didn't request this, you can safely ignore this email.
       </p>
     </div>"""
+    msg.attach(MIMEText(html, 'html'))
 
-    try:
-        resp = http_requests.post(
-            'https://api.mailjet.com/v3.1/send',
-            auth=(api_key, secret_key),
-            json={
-                'Messages': [{
-                    'From':     {'Email': from_email, 'Name': from_name},
-                    'To':       [{'Email': email}],
-                    'Subject':  '🎵 Your AI Music Studio Verification Code',
-                    'HTMLPart': html_body,
-                }]
-            },
-            timeout=15
-        )
-        if resp.status_code == 200:
-            status = resp.json()['Messages'][0]['Status']
-            if status == 'success':
-                print(f"[EMAIL SUCCESS] Mailjet sent to {email}")
-                return True
+    # Try port 587 (TLS) first, then 465 (SSL)
+    for port, use_ssl in [(587, False), (465, True)]:
+        try:
+            print(f"[EMAIL DEBUG] Trying port {port} ...")
+            if use_ssl:
+                server = smtplib.SMTP_SSL('smtp.gmail.com', port, timeout=30)
             else:
-                print(f"[EMAIL ERROR] Mailjet status: {status} | {resp.text[:200]}")
-                print(f"[OTP FALLBACK] OTP for {email}: {otp}")
-                return False
-        else:
-            print(f"[EMAIL ERROR] Mailjet {resp.status_code}: {resp.text[:200]}")
-            print(f"[OTP FALLBACK] OTP for {email}: {otp}")
-            return False
+                server = smtplib.SMTP('smtp.gmail.com', port, timeout=30)
+                server.ehlo()
+                server.starttls()
+            server.login(gmail_user, gmail_pass)
+            server.sendmail(gmail_user, email, msg.as_string())
+            server.quit()
+            print(f"[EMAIL SUCCESS] Sent to {email} via port {port}")
+            return True
+        except Exception as e:
+            print(f"[EMAIL ERROR] Port {port} failed: {e}")
+            continue
 
-    except Exception as e:
-        print(f"[EMAIL ERROR] Mailjet exception: {e}")
-        print(f"[OTP FALLBACK] OTP for {email}: {otp}")
-        return False
+    print(f"[OTP FALLBACK] All ports failed — OTP for {email}: {otp}")
+    return False
 
 
 def send_otp_sms(phone, otp):
@@ -1680,7 +1677,7 @@ def video_bgm_replace():
     if 'video' not in request.files:
         return jsonify({'success': False, 'message': 'No video file received'})
 
-    from moviepy import VideoFileClip, AudioFileClip
+    from moviepy.editor import VideoFileClip, AudioFileClip
 
     video_file = request.files['video']
     filename   = secure_filename(video_file.filename)
