@@ -174,10 +174,17 @@ async function loadQuiz() {
   const box = document.getElementById('quiz-box');
   if (!box) return;
 
+  // Reset state completely
   let questions = [];
   let current = 0;
   let score = 0;
   let timerInterval = null;
+  let answered = false;  // ← fix: prevent double-answer bug
+
+  box.innerHTML = `<div style="text-align:center;padding:20px;color:#aaa">
+    <div style="font-size:2rem;margin-bottom:10px">🎵</div>
+    <p>Loading quiz...</p>
+  </div>`;
 
   try {
     const res = await fetch('/api/quiz/questions');
@@ -195,6 +202,7 @@ async function loadQuiz() {
     if (current >= questions.length) {
       renderResult(); return;
     }
+    answered = false;  // ← reset for each question
     const q = questions[current];
     let timeLeft = 15;
 
@@ -208,12 +216,13 @@ async function loadQuiz() {
       <div class="quiz-options">
         ${q.options.map(o => `<button class="quiz-opt" data-opt="${o}">${o}</button>`).join('')}
       </div>
-      <div class="quiz-fact" id="qfact">💡 ${q.fact}</div>
-      <button class="quiz-next" id="qnext">Next Question →</button>
+      <div class="quiz-fact" id="qfact" style="display:none">💡 ${q.fact}</div>
+      <button class="quiz-next" id="qnext" style="display:none">Next Question →</button>
     `;
 
     // Timer
     const timerEl = document.getElementById('qtimer');
+    clearInterval(timerInterval);  // ← clear any previous timer
     timerInterval = setInterval(() => {
       timeLeft--;
       if (timerEl) {
@@ -223,20 +232,25 @@ async function loadQuiz() {
       }
       if (timeLeft <= 0) {
         clearInterval(timerInterval);
-        revealAnswer(null);
+        if (!answered) revealAnswer(null);
       }
     }, 1000);
 
     // Option click
     box.querySelectorAll('.quiz-opt').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (answered) return;  // ← prevent double click
         clearInterval(timerInterval);
         revealAnswer(btn.dataset.opt);
       });
     });
+
+    const nextEl = document.getElementById('qnext');
+    if (nextEl) nextEl.addEventListener('click', () => { current++; renderQuestion(); });
   }
 
   function revealAnswer(chosen) {
+    answered = true;  // ← mark as answered
     const q = questions[current];
     box.querySelectorAll('.quiz-opt').forEach(btn => {
       btn.disabled = true;
@@ -248,10 +262,10 @@ async function loadQuiz() {
     const nextEl = document.getElementById('qnext');
     if (factEl) factEl.style.display = 'block';
     if (nextEl) nextEl.style.display = 'block';
-    if (nextEl) nextEl.addEventListener('click', () => { current++; renderQuestion(); });
   }
 
   function renderResult() {
+    clearInterval(timerInterval);
     const emoji = score >= 40 ? '🏆' : score >= 20 ? '🎵' : '🎶';
     const msg   = score >= 40 ? 'Music Genius!' : score >= 20 ? 'Good Ear!' : 'Keep Listening!';
     box.innerHTML = `
