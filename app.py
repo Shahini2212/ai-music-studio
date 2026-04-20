@@ -1515,7 +1515,9 @@ def remix_songs():
 
     try:
         for f in files:
-            path = os.path.join(UPLOAD_FOLDER, secure_filename(f.filename))
+            # Add unique prefix to prevent filename conflicts between users
+            unique_name = f"{session['user_id'][:8]}_{int(time.time())}_{secure_filename(f.filename)}"
+            path = os.path.join(UPLOAD_FOLDER, unique_name)
             f.save(path)
             saved_paths.append(path)
 
